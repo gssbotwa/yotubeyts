@@ -1,62 +1,128 @@
 const express = require('express');
-const ytdl = require('ytdl-core-discord'); // Use ytdl-core-discord instead of ytdl-core
-const ytSearch = require('yt-search');
+const ytsr = require('ytsr');
+const ytdl = require('ytdl-core');
+const moment = require('moment');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = 3000;
 
-app.use(express.json());
+const searchCache = new Map();
 
-app.get('/download', async (req, res) => {
+app.get('/api', async (req, res) => {
+  const searchQuery = req.query.search;
+  const select = req.query.select;
+  const formateselect = req.query.formateselect;
+  const qualityselect = req.query.qualityselect;
+
   try {
-    const query = req.query.query || req.query.link;
+    if (searchQuery) {
+      let searchResults;
 
-    if (!query) {
-      return res.status(400).json({ error: 'Query parameter or link is missing.' });
-    }
-
-    const isLink = ytdl.validateURL(query);
-
-    let videoInfo;
-    if (isLink) {
-      videoInfo = await ytdl.getInfo(query, { filter: 'audioonly' });
-    } else {
-      const searchResults = await ytSearch(query);
-      if (!searchResults.videos.length) {
-        return res.status(404).json({ error: 'No videos found for the given query.' });
+      if (!searchCache.has(searchQuery)) {
+        // If search results are not in cache, fetch and store them
+        searchResults = await ytsr(searchQuery, { limit: 10 });
+        searchCache.set(searchQuery, searchResults);
+      } else {
+        // If search results are in cache, use them
+        searchResults = searchCache.get(searchQuery);
       }
 
-      videoInfo = await ytdl.getInfo(searchResults.videos[0].url, { filter: 'audioonly' });
+      if (!searchResults || !searchResults.items || searchResults.items.length === 0) {
+        res.json({ error: 'No search results found.' });
+        return;
+      }
+
+      if (!select) {
+        // If no select parameter is provided, show numbered titles for search results
+        const numberedResults = searchResults.items.map((item, i) => {
+          return `${i + 1}. ${item.title}`;
+        });
+
+        res.json({ type: 'search', data: numberedResults });
+      } else if (!formateselect) {
+        // If select parameter is provided, but not formateselect, show options to select format
+        const formatOptions = ['audio', 'video'];
+        const numberedFormatOptions = formatOptions.map((format, i) => `${i + 1}. [${format}]`);
+
+        res.json({ type: 'selectFormat', data: numberedFormatOptions });
+      } else if (!qualityselect && formateselect === '2') {
+        // If qualityselect parameter is not provided and formateselect is '2' (video), show options to select video quality
+        const index = parseInt(select);
+
+        if (!isNaN(index) && index >= 1 && index <= 10) {
+          const selectedVideo = searchResults.items[index - 1];
+
+          if (selectedVideo && selectedVideo.type === 'video') {
+            const availableQualities = await getVideoQualities(selectedVideo.url);
+            const numberedQualityOptions = availableQualities.map((quality, i) => `${i + 1}. [${quality}]`);
+
+            res.json({ type: 'selectQuality', data: numberedQualityOptions });
+          } else {
+            res.json({ error: 'Invalid selection. Please provide valid video indexes between 1 and 10.' });
+          }
+        } else {
+          res.json({ error: 'Invalid selection. Please provide valid video indexes between 1 and 10.' });
+        }
+      } else {
+        // If all parameters are provided, fetch details and handle download
+        const index = parseInt(select);
+
+        if (!isNaN(index) && index >= 1 && index <= 10) {
+          const selectedVideo = searchResults.items[index - 1];
+
+          if (selectedVideo) {
+            if (formateselect === '1') {
+              // For audio, download audio directly
+              const audioStream = ytdl(selectedVideo.url, { quality: 'highestaudio' });
+              res.setHeader('Content-Disposition', `attachment; filename="${selectedVideo.title}.mp3"`);
+              audioStream.pipe(res);
+            } else if (formateselect === '2' && selectedVideo.type === 'video') {
+              // For video, download video with the selected quality
+              const selectedQualityIndex = parseInt(qualityselect);
+
+              if (!isNaN(selectedQualityIndex) && selectedQualityIndex >= 1) {
+                const selectedQuality = (await getVideoQualities(selectedVideo.url))[selectedQualityIndex - 1];
+                const videoStream = ytdl(selectedVideo.url, { quality: selectedQuality });
+                res.setHeader('Content-Disposition', `attachment; filename="${selectedVideo.title}.mp4"`);
+                videoStream.pipe(res);
+              } else {
+                res.json({ error: 'Invalid quality selection. Please provide a valid quality index.' });
+              }
+            } else {
+              res.json({ error: 'Invalid format selection. Please choose either "1" for audio or "2" for video.' });
+            }
+          } else {
+            res.json({ error: 'Invalid selection. Please provide valid video indexes between 1 and 10.' });
+          }
+        } else {
+          res.json({ error: 'Invalid selection. Please provide valid video indexes between 1 and 10.' });
+        }
+      }
+    } else {
+      res.json({ error: 'Please provide a search query.' });
     }
-
-    if (!videoInfo || !videoInfo.formats || videoInfo.formats.length === 0) {
-      return res.status(404).json({ error: 'No suitable formats found for the video.' });
-    }
-
-    const audioFormat = ytdl.chooseFormat(videoInfo.formats, { quality: 'highestaudio' });
-
-    if (!audioFormat || !audioFormat.url) {
-      return res.status(404).json({ error: 'No suitable audio format found for the video.' });
-    }
-
-    const result = {
-      title: videoInfo.videoDetails.title,
-      downloadURL: audioFormat.url,
-    };
-
-    console.log('Download result:', result);
-    res.json(result);
   } catch (error) {
-    console.error('Error during download:', error);
-    res.status(500).json({ error: 'An error occurred during download.' });
+    console.error(error);
+    res.json({ error: 'Error processing request.' });
   }
 });
 
+async function getVideoQualities(videoUrl) {
+  try {
+    const info = await ytdl.getInfo(videoUrl);
+    const videoFormats = ytdl.filterFormats(info.formats, 'videoonly');
+    
+    console.log('Available video formats:', videoFormats.map(format => format.qualityLabel).join(', '));
 
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not Found' });
-});
+    const uniqueQualities = [...new Set(videoFormats.map(format => format.qualityLabel))];
+    return uniqueQualities;
+  } catch (error) {
+    console.error('Error retrieving video formats:', error.message);
+    return [];
+  }
+}
 
-app.listen(port, () => {
-  console.log(`Server is running at http://localhost:${port}`);
+
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
