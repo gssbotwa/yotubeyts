@@ -2,6 +2,7 @@ const express = require('express');
 const ytsr = require('ytsr');
 const ytdl = require('ytdl-core');
 const moment = require('moment');
+const ffmpeg = require('fluent-ffmpeg');
 
 const app = express();
 const PORT = 3000;
@@ -72,10 +73,16 @@ app.get('/api', async (req, res) => {
 
           if (selectedVideo) {
             if (formateselect === '1') {
-              // For audio, download audio directly
+              // For audio, download audio and convert to MP3
               const audioStream = ytdl(selectedVideo.url, { quality: 'highestaudio' });
-              res.setHeader('Content-Disposition', `attachment; filename="${selectedVideo.title}.mp3"`);
-              audioStream.pipe(res);
+              res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(selectedVideo.title)}.mp3"`);
+              
+              ffmpeg()
+                .input(audioStream)
+                .audioCodec('libmp3lame')
+                .toFormat('mp3')
+                .on('end', () => res.end())
+                .pipe(res, { end: true });
             } else if (formateselect === '2' && selectedVideo.type === 'video') {
               // For video, download video with the selected quality
               const selectedQualityIndex = parseInt(qualityselect);
@@ -83,7 +90,7 @@ app.get('/api', async (req, res) => {
               if (!isNaN(selectedQualityIndex) && selectedQualityIndex >= 1) {
                 const selectedQuality = (await getVideoQualities(selectedVideo.url))[selectedQualityIndex - 1];
                 const videoStream = ytdl(selectedVideo.url, { quality: selectedQuality });
-                res.setHeader('Content-Disposition', `attachment; filename="${selectedVideo.title}.mp4"`);
+                res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(selectedVideo.title)}.mp4"`);
                 videoStream.pipe(res);
               } else {
                 res.json({ error: 'Invalid quality selection. Please provide a valid quality index.' });
@@ -108,20 +115,16 @@ app.get('/api', async (req, res) => {
 });
 
 async function getVideoQualities(videoUrl) {
-  try {
-    const info = await ytdl.getInfo(videoUrl);
-    const videoFormats = ytdl.filterFormats(info.formats, 'videoonly');
-    
-    console.log('Available video formats:', videoFormats.map(format => format.qualityLabel).join(', '));
-
-    const uniqueQualities = [...new Set(videoFormats.map(format => format.qualityLabel))];
-    return uniqueQualities;
-  } catch (error) {
-    console.error('Error retrieving video formats:', error.message);
-    return [];
-  }
+  const info = await ytdl.getInfo(videoUrl);
+  const videoFormats = ytdl.filterFormats(info.formats, 'videoonly');
+  const uniqueQualities = [...new Set(videoFormats.map(format => format.qualityLabel))];
+  return uniqueQualities;
 }
 
+// Add a new function to sanitize filenames
+function sanitizeFilename(filename) {
+  return filename.replace(/[^a-zA-Z0-9]/g, '_');
+}
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
