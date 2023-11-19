@@ -5,7 +5,7 @@ const moment = require('moment');
 const ffmpeg = require('fluent-ffmpeg');
 
 const app = express();
-const PORT = 3000;
+const port = process.env.PORT || 3000;
 
 const searchCache = new Map();
 
@@ -126,6 +126,6 @@ function sanitizeFilename(filename) {
   return filename.replace(/[^a-zA-Z0-9]/g, '_');
 }
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });
