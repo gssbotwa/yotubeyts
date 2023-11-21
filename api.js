@@ -5,7 +5,7 @@ const moment = require('moment');
 const ffmpeg = require('fluent-ffmpeg');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 
 const searchCache = new Map();
 
@@ -20,11 +20,9 @@ app.get('/api', async (req, res) => {
       let searchResults;
 
       if (!searchCache.has(searchQuery)) {
-        // If search results are not in cache, fetch and store them
         searchResults = await ytsr(searchQuery, { limit: 10 });
         searchCache.set(searchQuery, searchResults);
       } else {
-        // If search results are in cache, use them
         searchResults = searchCache.get(searchQuery);
       }
 
@@ -34,38 +32,17 @@ app.get('/api', async (req, res) => {
       }
 
       if (!select) {
-        // If no select parameter is provided, show numbered titles for search results
         const numberedResults = searchResults.items.map((item, i) => {
           return `${i + 1}. ${item.title}`;
         });
 
         res.json({ type: 'search', data: numberedResults });
       } else if (!formateselect) {
-        // If select parameter is provided, but not formateselect, show options to select format
         const formatOptions = ['audio', 'video'];
         const numberedFormatOptions = formatOptions.map((format, i) => `${i + 1}. [${format}]`);
 
         res.json({ type: 'selectFormat', data: numberedFormatOptions });
-      } else if (!qualityselect && formateselect === '2') {
-        // If qualityselect parameter is not provided and formateselect is '2' (video), show options to select video quality
-        const index = parseInt(select);
-
-        if (!isNaN(index) && index >= 1 && index <= 10) {
-          const selectedVideo = searchResults.items[index - 1];
-
-          if (selectedVideo && selectedVideo.type === 'video') {
-            const availableQualities = await getVideoQualities(selectedVideo.url);
-            const numberedQualityOptions = availableQualities.map((quality, i) => `${i + 1}. [${quality}]`);
-
-            res.json({ type: 'selectQuality', data: numberedQualityOptions });
-          } else {
-            res.json({ error: 'Invalid selection. Please provide valid video indexes between 1 and 10.' });
-          }
-        } else {
-          res.json({ error: 'Invalid selection. Please provide valid video indexes between 1 and 10.' });
-        }
       } else {
-        // If all parameters are provided, fetch details and handle download
         const index = parseInt(select);
 
         if (!isNaN(index) && index >= 1 && index <= 10) {
@@ -73,27 +50,36 @@ app.get('/api', async (req, res) => {
 
           if (selectedVideo) {
             if (formateselect === '1') {
-              // For audio, download audio and convert to MP3
-              const audioStream = ytdl(selectedVideo.url, { quality: 'highestaudio' });
-              res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(selectedVideo.title)}.mp3"`);
-              
-              ffmpeg()
-                .input(audioStream)
-                .audioCodec('libmp3lame')
-                .toFormat('mp3')
-                .on('end', () => res.end())
-                .pipe(res, { end: true });
-            } else if (formateselect === '2' && selectedVideo.type === 'video') {
-              // For video, download video with the selected quality
-              const selectedQualityIndex = parseInt(qualityselect);
+              const audioInfo = await ytdl.getInfo(selectedVideo.url);
 
-              if (!isNaN(selectedQualityIndex) && selectedQualityIndex >= 1) {
-                const selectedQuality = (await getVideoQualities(selectedVideo.url))[selectedQualityIndex - 1];
-                const videoStream = ytdl(selectedVideo.url, { quality: selectedQuality });
-                res.setHeader('Content-Disposition', `attachment; filename="${sanitizeFilename(selectedVideo.title)}.mp4"`);
-                videoStream.pipe(res);
+              res.json({
+                type: 'downloadAudio',
+                data: {
+                  title: selectedVideo.title,
+                  downloadUrl: audioInfo.formats.find(format => format.mimeType.includes('audio/mp4')).url,
+                },
+              });
+            } else if (formateselect === '2' && selectedVideo.type === 'video') {
+              const videoFormats = await ytdl.getInfo(selectedVideo.url);
+
+              if (videoFormats && videoFormats.formats) {
+                const audioAndVideoFormats = videoFormats.formats.filter(format => format.hasAudio && format.hasVideo);
+
+                if (audioAndVideoFormats.length > 0) {
+                  const selectedFormat = audioAndVideoFormats[0]; // You can customize the selection logic if needed
+
+                  res.json({
+                    type: 'downloadVideo',
+                    data: {
+                      title: selectedVideo.title,
+                      downloadUrl: selectedFormat.url,
+                    },
+                  });
+                } else {
+                  res.json({ error: 'No suitable video format with audio found.' });
+                }
               } else {
-                res.json({ error: 'Invalid quality selection. Please provide a valid quality index.' });
+                res.json({ error: 'Error fetching video formats.' });
               }
             } else {
               res.json({ error: 'Invalid format selection. Please choose either "1" for audio or "2" for video.' });
@@ -113,18 +99,6 @@ app.get('/api', async (req, res) => {
     res.json({ error: 'Error processing request.' });
   }
 });
-
-async function getVideoQualities(videoUrl) {
-  const info = await ytdl.getInfo(videoUrl);
-  const videoFormats = ytdl.filterFormats(info.formats, 'videoonly');
-  const uniqueQualities = [...new Set(videoFormats.map(format => format.qualityLabel))];
-  return uniqueQualities;
-}
-
-// Add a new function to sanitize filenames
-function sanitizeFilename(filename) {
-  return filename.replace(/[^a-zA-Z0-9]/g, '_');
-}
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
